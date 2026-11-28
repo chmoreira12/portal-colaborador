@@ -21,7 +21,12 @@ A arquitetura deverá garantir:
 | Linguagem | Java 21 LTS |
 | Framework | Spring Boot 4.x |
 | APIs REST | Spring MVC |
-| Segurança | Spring Security |
+| Segurança | Spring Security, OAuth2 Resource Server, OAuth2 Client e Authorization Server |
+| Cache | Redis, Spring Cache e Spring Data Redis |
+| Frontend | Angular, TypeScript, Angular Material e RxJS |
+| E-mail | Spring Boot Mail, SMTP, Mailpit e Amazon SES |
+| Cloud | AWS |
+| Infraestrutura como código | Terraform |
 | Persistência | Spring Data JPA e Hibernate |
 | Banco de dados | PostgreSQL |
 | Migrações | Flyway |
@@ -36,7 +41,7 @@ A arquitetura deverá garantir:
 | Orquestração | Kubernetes |
 | Gerenciamento de deployments | Helm |
 | CI/CD | GitHub Actions |
-| Registro de imagens | GitHub Container Registry |
+| Registro de imagens | Amazon ECR |
 | Qualidade de código | SonarQube Cloud |
 | Análise de vulnerabilidades | Trivy |
 
@@ -85,6 +90,10 @@ Responsável pelo domínio de identidade e acesso.
 
 Será a fonte de verdade das credenciais, sessões e estados de segurança das contas.
 
+### 3.4. frontend
+
+SPA Angular organizada por funcionalidades, com componentes standalone, Reactive Forms, Angular Router, Angular Material e RxJS. Consumir exclusivamente a API pública do Gateway. Interceptors, guards e tratamento de erros centralizados; controles de interface não substituem autorização no backend. Implementar autenticação, cookies, CSRF e renovação conforme `04-SEGURANCA.md`. Publicar build estático em contêiner Nginx, com roteamento SPA e mesma origem da API em produção.
+
 ## 4. Organização do monorepo
 
 O projeto será mantido em um único repositório Git.
@@ -94,9 +103,11 @@ portal-colaborador/
 ├── api-gateway/
 ├── colaborador-service/
 ├── identidade-service/
+├── frontend/
 ├── infrastructure/
 │   ├── docker/
-│   └── helm/
+│   ├── helm/
+│   └── terraform/
 ├── .github/
 │   └── workflows/
 ├── docs/
@@ -106,7 +117,7 @@ portal-colaborador/
 └── README.md
 ```
 
-Cada aplicação deverá possuir:
+Cada aplicação backend deverá possuir:
 
 - Projeto Spring Boot independente.
 - Arquivo `pom.xml` próprio.
@@ -114,6 +125,8 @@ Cada aplicação deverá possuir:
 - Dockerfile próprio.
 - Configurações específicas.
 - Ciclo de build e implantação independente.
+
+O frontend possuirá `package.json`, lockfile, testes, Dockerfile e pipeline próprios. Utilizar npm e `npm ci` no CI.
 
 Inicialmente, não serão criados módulos Maven compartilhados entre as aplicações.
 
@@ -391,7 +404,7 @@ Não será utilizado Netflix Eureka.
 | Kubernetes ConfigMap | Configurações externas não sensíveis. |
 | Kubernetes Secret | Credenciais e informações sensíveis. |
 
-As configurações externas deverão ser disponibilizadas às aplicações por meio de variáveis de ambiente.
+Disponibilizar configurações não sensíveis por variáveis de ambiente; segredos de produção por mecanismo externo autorizado, preferencialmente volumes CSI, conforme `04-SEGURANCA.md`.
 
 Informações sensíveis não deverão ser versionadas no Git nem incorporadas às imagens Docker.
 
@@ -458,9 +471,9 @@ A implementação deverá contemplar testes unitários, de integração, de cont
 
 | Tecnologia | Responsabilidade |
 |---|---|
-| JUnit 5 | Testes automatizados. |
+| JUnit Jupiter (versão gerenciada pelo Spring Boot) | Testes automatizados. |
 | Mockito | Isolamento de dependências. |
-| Testcontainers | Testes com PostgreSQL e Kafka reais. |
+| Testcontainers | Testes com PostgreSQL, Kafka e Redis reais. |
 | MockMvc | Testes dos endpoints Spring MVC. |
 | WireMock | Simulação de integrações HTTP. |
 | JaCoCo | Análise de cobertura de código. |
@@ -512,7 +525,7 @@ O Trivy será utilizado para análise de vulnerabilidades em dependências e ima
 O pipeline deverá:
 
 - Construir as imagens Docker das aplicações afetadas.
-- Publicar as imagens no GitHub Container Registry.
+- Publicar as imagens no Amazon ECR, autenticando o GitHub Actions via OIDC.
 - Implantar automaticamente as versões aprovadas em homologação.
 - Exigir aprovação manual para implantação em produção.
 - Promover para produção a mesma imagem validada em homologação.
@@ -521,7 +534,21 @@ Os pipelines deverão identificar as aplicações afetadas pelas alterações, i
 
 Os detalhes operacionais serão definidos em `09-OPERACAO.md`.
 
-## 15. Restrições arquiteturais
+### 14.5. AWS e Terraform
+
+Produção-alvo: EKS, ECR, RDS PostgreSQL, MSK, ElastiCache compatível com Redis OSS, SES, VPC, IAM, Secrets Manager, KMS, ALB e ACM. Utilizar Terraform para recursos AWS e Helm para workloads Kubernetes. State Terraform remoto em S3 com criptografia, versionamento, locking e acesso restrito. Isolar ambientes, redes e credenciais. Expor somente entrada HTTPS autorizada: ALB encaminha /api para Gateway e demais rotas para frontend; endpoints internos não são públicos. Manter TLS interno e controles de rede conforme segurança. Bancos separados com usuários exclusivos; não compartilhar tabelas. Homologação e produção promovem o mesmo digest de imagem. Validar custos, região, quotas, disponibilidade e dimensionamento antes de provisionar; configurar AWS Budgets e alertas. Não provisionar recursos pagos sem autorização. Detalhar operação em 09-OPERACAO.md.
+
+### 14.6. Ambiente local
+
+Docker Compose disponibiliza PostgreSQL, Kafka, Redis e Mailpit. Aplicações podem executar localmente durante desenvolvimento; oferecer execução integrada em contêineres. Utilizar versões fixadas e health checks, sem credenciais reais.
+
+## 15. Cache e segurança distribuída
+
+Utilizar Spring Cache com Redis no colaborador-service, padrão Cache Aside, inicialmente consulta de setor por ID, TTL de 60 segundos. Autorizar antes da leitura. Invalidar após commit de alteração; tratar falhas de invalidação com observabilidade e TTL, reconhecendo consistência eventual e possíveis corridas de preenchimento. Fallback de leitura ao PostgreSQL quando Redis indisponível. Chaves isoladas por ambiente e domínio. Não armazenar dados pessoais inicialmente. Validações de integridade, situação ativa e segurança sempre consultam fonte autoritativa. Redis também suporta rate limiting distribuído conforme 04-SEGURANCA.md; falha do limitador crítico não libera operações sensíveis.
+
+Adotar Saga Orquestrada persistente para alterações cadastrais críticas, comandos idempotentes, versões e reconciliação conforme 04-SEGURANCA.md. Validação síncrona de sessões no identidade-service com PostgreSQL primário e Fail Closed. OAuth2 Client Credentials para chamadas internas; identidade-service hospeda Authorization Server. Não utilizar cache positivo de sessões.
+
+## 16. Restrições arquiteturais
 
 - Cada microsserviço deverá possuir autonomia sobre seu domínio e sua persistência.
 - Não deverá existir compartilhamento direto de bancos de dados entre microsserviços.
@@ -532,7 +559,7 @@ Os detalhes operacionais serão definidos em `09-OPERACAO.md`.
 - Alterações arquiteturais relevantes deverão ser documentadas antes da implementação.
 - Decisões arquiteturais relevantes deverão ser registradas em `docs/adr/`.
 
-## 16. Documentos complementares
+## 17. Documentos complementares
 
 | Documento | Responsabilidade |
 |---|---|
